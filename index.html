@@ -1,0 +1,510 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>看屋生活機能查詢</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  :root {
+    --bg: #f7f6f3;
+    --panel: #ffffff;
+    --border: #e5e1da;
+    --text: #2b2926;
+    --text-muted: #6b675f;
+    --accent: #b5641f;
+    --accent-soft: #f3e6d8;
+    --shadow: 0 1px 2px rgba(0,0,0,0.06), 0 4px 12px rgba(0,0,0,0.05);
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang TC", "Microsoft JhengHei", "Noto Sans TC", sans-serif;
+  }
+  #app { display: flex; flex-direction: column; height: 100vh; }
+
+  header {
+    padding: 14px 16px 12px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  header h1 {
+    font-size: 17px;
+    margin: 0 0 10px;
+    font-weight: 700;
+    letter-spacing: 0.2px;
+  }
+  .search-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  #address {
+    flex: 1 1 220px;
+    min-width: 0;
+    padding: 10px 12px;
+    font-size: 15px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--text);
+  }
+  #address:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  select#radius {
+    padding: 10px 10px;
+    font-size: 14px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--text);
+  }
+  button#go {
+    padding: 10px 18px;
+    font-size: 15px;
+    font-weight: 600;
+    border: none;
+    border-radius: 8px;
+    background: var(--accent);
+    color: white;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  button#go:disabled { opacity: 0.6; cursor: default; }
+  button#go:active:not(:disabled) { transform: translateY(1px); }
+
+  #status {
+    font-size: 13px;
+    color: var(--text-muted);
+    margin-top: 8px;
+    min-height: 16px;
+  }
+  #status.error { color: #b3261e; }
+
+  main {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+    flex-direction: column;
+  }
+  @media (min-width: 860px) {
+    main { flex-direction: row; }
+  }
+
+  #map {
+    flex: 1 1 55%;
+    min-height: 280px;
+    background: #eae7e0;
+  }
+
+  #results {
+    flex: 1 1 45%;
+    overflow-y: auto;
+    padding: 12px 14px 32px;
+    border-top: 1px solid var(--border);
+  }
+  @media (min-width: 860px) {
+    #results { border-top: none; border-left: 1px solid var(--border); max-width: 420px; }
+  }
+
+  #placeName {
+    font-size: 14px;
+    color: var(--text-muted);
+    margin-bottom: 10px;
+    line-height: 1.5;
+  }
+  #placeName b { color: var(--text); }
+
+  .cat {
+    margin-bottom: 14px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  .cat-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    font-weight: 700;
+    font-size: 14px;
+    background: var(--accent-soft);
+  }
+  .cat-head .count {
+    margin-left: auto;
+    font-weight: 500;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+  .cat-list { list-style: none; margin: 0; padding: 0; }
+  .cat-list li {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 9px 12px;
+    border-top: 1px solid var(--border);
+    font-size: 13.5px;
+    cursor: pointer;
+  }
+  .cat-list li:hover { background: var(--bg); }
+  .cat-list li .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cat-list li .dist { flex-shrink: 0; color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .cat-empty { padding: 10px 12px; font-size: 13px; color: var(--text-muted); border-top: 1px solid var(--border); }
+
+  .leaflet-div-icon { background: transparent; border: none; }
+  .pin {
+    font-size: 18px;
+    line-height: 1;
+    text-align: center;
+    filter: drop-shadow(0 1px 1px rgba(0,0,0,0.35));
+  }
+  .pin.origin { font-size: 26px; }
+
+  footer {
+    flex-shrink: 0;
+    padding: 6px 14px;
+    font-size: 11px;
+    color: var(--text-muted);
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #1c1b19;
+      --panel: #242320;
+      --border: #3a3833;
+      --text: #ece9e3;
+      --text-muted: #a8a39a;
+      --accent: #e0954f;
+      --accent-soft: #3a2c1c;
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 4px 14px rgba(0,0,0,0.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #1c1b19;
+    --panel: #242320;
+    --border: #3a3833;
+    --text: #ece9e3;
+    --text-muted: #a8a39a;
+    --accent: #e0954f;
+    --accent-soft: #3a2c1c;
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 4px 14px rgba(0,0,0,0.35);
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>🏠 看屋生活機能查詢</h1>
+    <div class="search-row">
+      <input id="address" type="text" placeholder="輸入地址,例如:台北市大安區信義路四段1號" />
+      <select id="radius">
+        <option value="500">500 公尺內</option>
+        <option value="1000" selected>1000 公尺內</option>
+        <option value="1500">1500 公尺內</option>
+      </select>
+      <button id="go">查詢</button>
+    </div>
+    <div id="status"></div>
+  </header>
+  <main>
+    <div id="map"></div>
+    <div id="results">
+      <div id="placeName"></div>
+      <div id="resultBody"></div>
+    </div>
+  </main>
+  <footer>資料來源:OpenStreetMap 貢獻者(Nominatim / Overpass API)。資料為社群協作內容,僅供參考,實際請以現場勘查為準。</footer>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  var CATEGORIES = [
+    { key: "school", label: "🏫 學校 / 幼兒園", match: function (t) {
+        return t.amenity === "school" || t.amenity === "kindergarten" || t.amenity === "university" || t.amenity === "college";
+      }, color: "#3d6fb4" },
+    { key: "medical", label: "🏥 醫療院所", match: function (t) {
+        return t.amenity === "hospital" || t.amenity === "clinic" || t.amenity === "pharmacy" || t.amenity === "dentist";
+      }, color: "#c0392b" },
+    { key: "transit", label: "🚆 交通站點", match: function (t) {
+        return t.railway === "station" || t.railway === "halt" || t.station === "subway" ||
+               t.public_transport === "station" || t.highway === "bus_stop";
+      }, color: "#1f8a53" },
+    { key: "shopping", label: "🛒 超市 / 便利商店 / 賣場", match: function (t) {
+        return t.shop === "supermarket" || t.shop === "convenience" || t.shop === "mall" ||
+               t.shop === "department_store" || t.amenity === "marketplace";
+      }, color: "#b5641f" },
+    { key: "park", label: "🌳 公園綠地", match: function (t) {
+        return t.leisure === "park";
+      }, color: "#4c9a4c" },
+    { key: "other", label: "🏦 其他生活機能(銀行/郵局/警局)", match: function (t) {
+        return t.amenity === "bank" || t.amenity === "post_office" || t.amenity === "police" || t.amenity === "fire_station";
+      }, color: "#7a5c9e" }
+  ];
+
+  var MAX_PER_CATEGORY = 8;
+  var OVERPASS_ENDPOINTS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter"
+  ];
+
+  var addressEl = document.getElementById("address");
+  var radiusEl = document.getElementById("radius");
+  var goBtn = document.getElementById("go");
+  var statusEl = document.getElementById("status");
+  var placeNameEl = document.getElementById("placeName");
+  var resultBodyEl = document.getElementById("resultBody");
+
+  var map = L.map("map", { zoomControl: true }).setView([25.0478, 121.5319], 14);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: "&copy; OpenStreetMap contributors"
+  }).addTo(map);
+
+  var markersLayer = L.layerGroup().addTo(map);
+
+  function setStatus(msg, isError) {
+    statusEl.textContent = msg || "";
+    statusEl.className = isError ? "error" : "";
+  }
+
+  function setBusy(busy) {
+    goBtn.disabled = busy;
+    goBtn.textContent = busy ? "查詢中…" : "查詢";
+  }
+
+  function haversine(lat1, lon1, lat2, lon2) {
+    var R = 6371000;
+    var toRad = function (d) { return (d * Math.PI) / 180; };
+    var dLat = toRad(lat2 - lat1);
+    var dLon = toRad(lon2 - lon1);
+    var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  }
+
+  function formatDist(m) {
+    if (m < 1000) return Math.round(m) + " 公尺";
+    return (m / 1000).toFixed(2) + " 公里";
+  }
+
+  function geocode(address) {
+    var url = "https://nominatim.openstreetmap.org/search?format=json&countrycodes=tw&limit=1&q=" +
+      encodeURIComponent(address);
+    return fetch(url, { headers: { "Accept-Language": "zh-TW" } })
+      .then(function (res) {
+        if (!res.ok) throw new Error("地址查詢服務暫時無法使用");
+        return res.json();
+      })
+      .then(function (data) {
+        if (!data || data.length === 0) {
+          throw new Error("找不到這個地址,請試著輸入更完整的地址(縣市 + 區 + 路 + 號)");
+        }
+        return {
+          lat: parseFloat(data[0].lat),
+          lon: parseFloat(data[0].lon),
+          displayName: data[0].display_name
+        };
+      });
+  }
+
+  function buildOverpassQuery(lat, lon, radius) {
+    var tagGroups = [
+      '["amenity"~"school|kindergarten|university|college"]',
+      '["amenity"~"hospital|clinic|pharmacy|dentist"]',
+      '["shop"~"supermarket|convenience|mall|department_store"]',
+      '["amenity"="marketplace"]',
+      '["leisure"="park"]',
+      '["railway"~"station|halt"]',
+      '["station"="subway"]',
+      '["public_transport"="station"]',
+      '["highway"="bus_stop"]',
+      '["amenity"~"bank|post_office|police|fire_station"]'
+    ];
+    var parts = [];
+    tagGroups.forEach(function (tag) {
+      parts.push('node' + tag + '(around:' + radius + ',' + lat + ',' + lon + ');');
+      parts.push('way' + tag + '(around:' + radius + ',' + lat + ',' + lon + ');');
+    });
+    return "[out:json][timeout:25];(" + parts.join("") + ");out center;";
+  }
+
+  function queryOverpass(lat, lon, radius, endpointIndex) {
+    endpointIndex = endpointIndex || 0;
+    if (endpointIndex >= OVERPASS_ENDPOINTS.length) {
+      return Promise.reject(new Error("周邊機能查詢服務暫時無法使用,請稍後再試"));
+    }
+    var query = buildOverpassQuery(lat, lon, radius);
+    return fetch(OVERPASS_ENDPOINTS[endpointIndex], {
+      method: "POST",
+      body: "data=" + encodeURIComponent(query)
+    })
+      .then(function (res) {
+        if (!res.ok) throw new Error("bad status");
+        return res.json();
+      })
+      .then(function (data) { return data.elements || []; })
+      .catch(function () {
+        return queryOverpass(lat, lon, radius, endpointIndex + 1);
+      });
+  }
+
+  function categorize(tags) {
+    for (var i = 0; i < CATEGORIES.length; i++) {
+      if (CATEGORIES[i].match(tags)) return CATEGORIES[i];
+    }
+    return null;
+  }
+
+  function elementLatLon(el) {
+    if (el.type === "node") return { lat: el.lat, lon: el.lon };
+    if (el.center) return { lat: el.center.lat, lon: el.center.lon };
+    return null;
+  }
+
+  function processElements(elements, origin) {
+    var buckets = {};
+    CATEGORIES.forEach(function (c) { buckets[c.key] = []; });
+    var seen = {};
+
+    elements.forEach(function (el) {
+      var tags = el.tags || {};
+      var cat = categorize(tags);
+      if (!cat) return;
+      var pos = elementLatLon(el);
+      if (!pos) return;
+      var name = tags.name || tags["name:zh"] || null;
+      if (!name && cat.key !== "transit") return;
+      if (!name) name = cat.key === "transit" ? (tags.highway === "bus_stop" ? "公車站" : "站點") : "(未命名)";
+
+      var dedupeKey = cat.key + "|" + name + "|" + pos.lat.toFixed(4) + "|" + pos.lon.toFixed(4);
+      if (seen[dedupeKey]) return;
+      seen[dedupeKey] = true;
+
+      var dist = haversine(origin.lat, origin.lon, pos.lat, pos.lon);
+      buckets[cat.key].push({ name: name, lat: pos.lat, lon: pos.lon, dist: dist, tags: tags });
+    });
+
+    CATEGORIES.forEach(function (c) {
+      buckets[c.key].sort(function (a, b) { return a.dist - b.dist; });
+    });
+
+    return buckets;
+  }
+
+  function renderMap(origin, buckets) {
+    markersLayer.clearLayers();
+    map.setView([origin.lat, origin.lon], 16);
+
+    var originIcon = L.divIcon({ className: "leaflet-div-icon", html: '<div class="pin origin">📍</div>', iconSize: [30, 30], iconAnchor: [15, 28] });
+    L.marker([origin.lat, origin.lon], { icon: originIcon, zIndexOffset: 1000 })
+      .bindPopup("<b>查詢地址</b>")
+      .addTo(markersLayer);
+
+    CATEGORIES.forEach(function (cat) {
+      var items = buckets[cat.key].slice(0, MAX_PER_CATEGORY);
+      items.forEach(function (item) {
+        var emoji = cat.label.split(" ")[0];
+        var icon = L.divIcon({ className: "leaflet-div-icon", html: '<div class="pin">' + emoji + "</div>", iconSize: [22, 22], iconAnchor: [11, 20] });
+        var marker = L.marker([item.lat, item.lon], { icon: icon });
+        marker.bindPopup("<b>" + escapeHtml(item.name) + "</b><br>" + formatDist(item.dist));
+        marker.addTo(markersLayer);
+        item._marker = marker;
+      });
+    });
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function renderResults(buckets) {
+    var html = "";
+    CATEGORIES.forEach(function (cat) {
+      var items = buckets[cat.key];
+      html += '<div class="cat"><div class="cat-head">' + cat.label +
+        '<span class="count">' + items.length + " 處</span></div>";
+      if (items.length === 0) {
+        html += '<div class="cat-empty">範圍內查無資料</div>';
+      } else {
+        html += '<ul class="cat-list">';
+        items.slice(0, MAX_PER_CATEGORY).forEach(function (item, idx) {
+          html += '<li data-cat="' + cat.key + '" data-idx="' + idx + '">' +
+            '<span class="name">' + escapeHtml(item.name) + '</span>' +
+            '<span class="dist">' + formatDist(item.dist) + '</span></li>';
+        });
+        html += "</ul>";
+      }
+      html += "</div>";
+    });
+    resultBodyEl.innerHTML = html;
+
+    resultBodyEl.querySelectorAll(".cat-list li").forEach(function (li) {
+      li.addEventListener("click", function () {
+        var cat = li.getAttribute("data-cat");
+        var idx = parseInt(li.getAttribute("data-idx"), 10);
+        var item = buckets[cat][idx];
+        if (item && item._marker) {
+          map.setView(item._marker.getLatLng(), 17);
+          item._marker.openPopup();
+        }
+      });
+    });
+  }
+
+  function runSearch() {
+    var address = addressEl.value.trim();
+    if (!address) {
+      setStatus("請先輸入地址", true);
+      return;
+    }
+    var radius = parseInt(radiusEl.value, 10);
+
+    setBusy(true);
+    setStatus("查詢地址位置中…");
+    resultBodyEl.innerHTML = "";
+    placeNameEl.innerHTML = "";
+
+    geocode(address)
+      .then(function (origin) {
+        placeNameEl.innerHTML = "查詢地點:<b>" + escapeHtml(origin.displayName) + "</b>";
+        setStatus("正在查詢周邊生活機能…");
+        return queryOverpass(origin.lat, origin.lon, radius).then(function (elements) {
+          return { origin: origin, elements: elements };
+        });
+      })
+      .then(function (result) {
+        var buckets = processElements(result.elements, result.origin);
+        renderMap(result.origin, buckets);
+        renderResults(buckets);
+        setStatus("查詢完成");
+      })
+      .catch(function (err) {
+        setStatus(err.message || "查詢失敗,請稍後再試", true);
+      })
+      .finally(function () {
+        setBusy(false);
+      });
+  }
+
+  goBtn.addEventListener("click", runSearch);
+  addressEl.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") runSearch();
+  });
+})();
+</script>
+</body>
+</html>
