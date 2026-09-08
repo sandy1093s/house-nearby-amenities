@@ -83,6 +83,11 @@
     min-height: 16px;
   }
   #status.error { color: #b3261e; }
+  #hint {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 4px;
+  }
 
   main {
     flex: 1;
@@ -212,6 +217,7 @@
       <button id="go">查詢</button>
     </div>
     <div id="status"></div>
+    <div id="hint">💡 地址找不到時,可以直接在地圖上點一下正確的位置來查詢</div>
   </header>
   <main>
     <div id="map"></div>
@@ -299,24 +305,91 @@
     return (m / 1000).toFixed(2) + " 公里";
   }
 
-  function geocode(address) {
+  function delay(ms) {
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
+  }
+
+  // Nominatim 地址比對: 一次只查一個字串,查不到回傳 null(不丟錯,方便逐一嘗試)
+  function nominatimSearch(query) {
     var url = "https://nominatim.openstreetmap.org/search?format=json&countrycodes=tw&limit=1&q=" +
-      encodeURIComponent(address);
+      encodeURIComponent(query);
     return fetch(url, { headers: { "Accept-Language": "zh-TW" } })
-      .then(function (res) {
-        if (!res.ok) throw new Error("地址查詢服務暫時無法使用");
-        return res.json();
-      })
+      .then(function (res) { return res.ok ? res.json() : null; })
       .then(function (data) {
-        if (!data || data.length === 0) {
-          throw new Error("找不到這個地址,請試著輸入更完整的地址(縣市 + 區 + 路 + 號)");
-        }
+        if (!data || data.length === 0) return null;
+        return { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon), displayName: data[0].display_name };
+      })
+      .catch(function () { return null; });
+  }
+
+  // 備用地圖服務(Photon/Komoot),對部分 Nominatim 查不到的地址比對方式不同,常能補上
+  function photonSearch(query) {
+    var url = "https://photon.komoot.io/api/?limit=1&lang=zh&lat=23.6978&lon=120.9605&q=" +
+      encodeURIComponent(query);
+    return fetch(url)
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .then(function (data) {
+        if (!data || !data.features || data.features.length === 0) return null;
+        var f = data.features[0];
+        var p = f.properties || {};
+        var nameParts = [p.name, p.street, p.district, p.city, p.state].filter(Boolean);
         return {
-          lat: parseFloat(data[0].lat),
-          lon: parseFloat(data[0].lon),
-          displayName: data[0].display_name
+          lat: f.geometry.coordinates[1],
+          lon: f.geometry.coordinates[0],
+          displayName: nameParts.join(" ") || query
         };
-      });
+      })
+      .catch(function () { return null; });
+  }
+
+  function truncateAt(str, keyword) {
+    var idx = str.lastIndexOf(keyword);
+    if (idx === -1) return null;
+    return str.slice(0, idx + keyword.length);
+  }
+
+  // 由精確到粗略,逐步簡化地址(去樓層/門牌 -> 去弄 -> 去巷 -> 去段),增加比對成功機會
+  function buildCandidates(address) {
+    var list = [address];
+    [ "號", "弄", "巷", "段" ].forEach(function (kw) {
+      var c = truncateAt(address, kw);
+      if (c && list.indexOf(c) === -1) list.push(c);
+    });
+    return list;
+  }
+
+  function geocode(address, onProgress) {
+    var candidates = buildCandidates(address);
+    var i = 0;
+
+    function tryNext() {
+      if (i >= candidates.length) {
+        onProgress && onProgress("嘗試備用地圖服務…");
+        return photonSearch(address).then(function (r) {
+          if (r) return r;
+          throw new Error("找不到這個地址,請確認地址是否正確,或直接在地圖上點選正確的位置");
+        });
+      }
+      var query = candidates[i];
+      i++;
+      var wait = i > 1 ? delay(1100) : Promise.resolve();
+      return wait
+        .then(function () {
+          onProgress && onProgress(i === 1 ? "查詢地址位置中…" : "查詢地址位置中(簡化地址重試 " + (i - 1) + ")…");
+          return nominatimSearch(query);
+        })
+        .then(function (r) { return r ? r : tryNext(); });
+    }
+
+    return tryNext();
+  }
+
+  function reverseGeocode(lat, lon) {
+    var url = "https://nominatim.openstreetmap.org/reverse?format=json&lat=" + lat + "&lon=" + lon + "&zoom=18";
+    return fetch(url, { headers: { "Accept-Language": "zh-TW" } })
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .then(function (data) { return data && data.display_name ? data.display_name : null; })
+      .catch(function () { return null; });
   }
 
   function buildOverpassQuery(lat, lon, radius) {
@@ -465,6 +538,18 @@
     });
   }
 
+  function searchFromOrigin(origin, radius) {
+    placeNameEl.innerHTML = "查詢地點:<b>" + escapeHtml(origin.displayName) + "</b>";
+    setStatus("正在查詢周邊生活機能…");
+    return queryOverpass(origin.lat, origin.lon, radius)
+      .then(function (elements) {
+        var buckets = processElements(elements, origin);
+        renderMap(origin, buckets);
+        renderResults(buckets);
+        setStatus("查詢完成");
+      });
+  }
+
   function runSearch() {
     var address = addressEl.value.trim();
     if (!address) {
@@ -478,19 +563,28 @@
     resultBodyEl.innerHTML = "";
     placeNameEl.innerHTML = "";
 
-    geocode(address)
-      .then(function (origin) {
-        placeNameEl.innerHTML = "查詢地點:<b>" + escapeHtml(origin.displayName) + "</b>";
-        setStatus("正在查詢周邊生活機能…");
-        return queryOverpass(origin.lat, origin.lon, radius).then(function (elements) {
-          return { origin: origin, elements: elements };
-        });
+    geocode(address, setStatus)
+      .then(function (origin) { return searchFromOrigin(origin, radius); })
+      .catch(function (err) {
+        setStatus(err.message || "查詢失敗,請稍後再試", true);
       })
-      .then(function (result) {
-        var buckets = processElements(result.elements, result.origin);
-        renderMap(result.origin, buckets);
-        renderResults(buckets);
-        setStatus("查詢完成");
+      .finally(function () {
+        setBusy(false);
+      });
+  }
+
+  function runSearchFromMapClick(latlng) {
+    var radius = parseInt(radiusEl.value, 10);
+    setBusy(true);
+    setStatus("正在解析點選位置…");
+    resultBodyEl.innerHTML = "";
+    placeNameEl.innerHTML = "";
+
+    var origin = { lat: latlng.lat, lon: latlng.lng, displayName: "地圖上點選的位置" };
+    reverseGeocode(origin.lat, origin.lon)
+      .then(function (name) {
+        if (name) origin.displayName = name;
+        return searchFromOrigin(origin, radius);
       })
       .catch(function (err) {
         setStatus(err.message || "查詢失敗,請稍後再試", true);
@@ -504,6 +598,7 @@
   addressEl.addEventListener("keydown", function (e) {
     if (e.key === "Enter") runSearch();
   });
+  map.on("click", function (e) { runSearchFromMapClick(e.latlng); });
 })();
 </script>
 </body>
