@@ -259,8 +259,10 @@
 
   var MAX_PER_CATEGORY = 8;
   var OVERPASS_ENDPOINTS = [
+    "https://overpass.kumi.systems/api/interpreter",
     "https://overpass-api.de/api/interpreter",
-    "https://overpass.kumi.systems/api/interpreter"
+    "https://overpass.private.coffee/api/interpreter",
+    "https://overpass.openstreetmap.ru/api/interpreter"
   ];
 
   var addressEl = document.getElementById("address");
@@ -313,7 +315,7 @@
   function nominatimSearch(query) {
     var url = "https://nominatim.openstreetmap.org/search?format=json&countrycodes=tw&limit=1&q=" +
       encodeURIComponent(query);
-    return fetch(url, { headers: { "Accept-Language": "zh-TW" } })
+    return fetchWithTimeout(url, { headers: { "Accept-Language": "zh-TW" } }, 10000)
       .then(function (res) { return res.ok ? res.json() : null; })
       .then(function (data) {
         if (!data || data.length === 0) return null;
@@ -326,7 +328,7 @@
   function photonSearch(query) {
     var url = "https://photon.komoot.io/api/?limit=1&lang=zh&lat=23.6978&lon=120.9605&q=" +
       encodeURIComponent(query);
-    return fetch(url)
+    return fetchWithTimeout(url, {}, 10000)
       .then(function (res) { return res.ok ? res.json() : null; })
       .then(function (data) {
         if (!data || !data.features || data.features.length === 0) return null;
@@ -386,7 +388,7 @@
 
   function reverseGeocode(lat, lon) {
     var url = "https://nominatim.openstreetmap.org/reverse?format=json&lat=" + lat + "&lon=" + lon + "&zoom=18";
-    return fetch(url, { headers: { "Accept-Language": "zh-TW" } })
+    return fetchWithTimeout(url, { headers: { "Accept-Language": "zh-TW" } }, 10000)
       .then(function (res) { return res.ok ? res.json() : null; })
       .then(function (data) { return data && data.display_name ? data.display_name : null; })
       .catch(function () { return null; });
@@ -405,31 +407,40 @@
       '["highway"="bus_stop"]',
       '["amenity"~"bank|post_office|police|fire_station"]'
     ];
-    var parts = [];
-    tagGroups.forEach(function (tag) {
-      parts.push('node' + tag + '(around:' + radius + ',' + lat + ',' + lon + ');');
-      parts.push('way' + tag + '(around:' + radius + ',' + lat + ',' + lon + ');');
+    // 用 nwr(node/way/relation 合併選取)取代分開寫 node/way,查詢量減半,比較不會讓伺服器逾時
+    var parts = tagGroups.map(function (tag) {
+      return 'nwr' + tag + '(around:' + radius + ',' + lat + ',' + lon + ');';
     });
-    return "[out:json][timeout:25];(" + parts.join("") + ");out center;";
+    return "[out:json][timeout:20];(" + parts.join("") + ");out center;";
   }
 
-  function queryOverpass(lat, lon, radius, endpointIndex) {
+  function fetchWithTimeout(url, options, timeoutMs) {
+    var controller = new AbortController();
+    var timer = setTimeout(function () { controller.abort(); }, timeoutMs);
+    options = Object.assign({}, options, { signal: controller.signal });
+    return fetch(url, options).finally(function () { clearTimeout(timer); });
+  }
+
+  function queryOverpass(lat, lon, radius, onProgress, endpointIndex) {
     endpointIndex = endpointIndex || 0;
     if (endpointIndex >= OVERPASS_ENDPOINTS.length) {
-      return Promise.reject(new Error("周邊機能查詢服務暫時無法使用,請稍後再試"));
+      return Promise.reject(new Error("周邊機能查詢服務目前忙碌中,請稍後再試一次"));
+    }
+    if (endpointIndex > 0) {
+      onProgress && onProgress("資料伺服器回應較慢,改用備用伺服器查詢中(" + (endpointIndex + 1) + "/" + OVERPASS_ENDPOINTS.length + ")…");
     }
     var query = buildOverpassQuery(lat, lon, radius);
-    return fetch(OVERPASS_ENDPOINTS[endpointIndex], {
+    return fetchWithTimeout(OVERPASS_ENDPOINTS[endpointIndex], {
       method: "POST",
       body: "data=" + encodeURIComponent(query)
-    })
+    }, 18000)
       .then(function (res) {
         if (!res.ok) throw new Error("bad status");
         return res.json();
       })
       .then(function (data) { return data.elements || []; })
       .catch(function () {
-        return queryOverpass(lat, lon, radius, endpointIndex + 1);
+        return queryOverpass(lat, lon, radius, onProgress, endpointIndex + 1);
       });
   }
 
@@ -540,8 +551,8 @@
 
   function searchFromOrigin(origin, radius) {
     placeNameEl.innerHTML = "查詢地點:<b>" + escapeHtml(origin.displayName) + "</b>";
-    setStatus("正在查詢周邊生活機能…");
-    return queryOverpass(origin.lat, origin.lon, radius)
+    setStatus("正在查詢周邊生活機能(資料量較大,約需 5-20 秒)…");
+    return queryOverpass(origin.lat, origin.lon, radius, setStatus)
       .then(function (elements) {
         var buckets = processElements(elements, origin);
         renderMap(origin, buckets);
